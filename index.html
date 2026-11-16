@@ -93,6 +93,8 @@ input[type=text],input[type=search],input[type=url]{width:100%;height:46px;borde
 .cam .torch{border:0;background:rgba(255,255,255,.15);color:#fff;border-radius:16px;padding:4px 10px;font-size:14px}
 .flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .2s}
 .viewer img{flex:1;object-fit:contain;min-height:0;width:100%}
+.viewer .pages{flex:1;overflow:auto;min-height:0;padding-top:env(safe-area-inset-top)}
+.viewer .pages img{display:block;height:auto;margin-bottom:8px;background:#fff}
 .viewer .info{color:#fff;font-size:13px;padding:6px 12px}
 .viewer .bt,.sign .bt{display:flex;gap:8px;padding:10px 10px calc(10px + env(safe-area-inset-bottom))}
 .sign{background:#fff}
@@ -117,7 +119,7 @@ input[type=text],input[type=search],input[type=url]{width:100%;height:46px;borde
 <script>
 'use strict';
 /* ============ 常數 ============ */
-const VER='0.1.0';
+const VER='0.2.0';
 const WM='僅供成大智研公司驗證使用';
 const DOCS=[
  {k:'id',n:'身分證',file:'身分證.pdf',min:2,max:2,aim:'card',hint:'先拍正面、再拍反面，兩面放在同一頁'},
@@ -265,7 +267,7 @@ function vRec(B,F){
   B.innerHTML=`<div class="who"><b>${esc(r.name)}</b> ${badge(r)}<small>編號 ${esc(r.no)}${r.tempNo?`（原暫編 ${esc(r.tempNo)}）`:''}・${esc(r.staff)}・${new Date(r.finished||r.created).toLocaleString('zh-TW',{hour12:false})}<br>批次碼 ${r.id}</small></div>
     ${r.lastErr&&r.status!=='done'&&r.status!=='nas'?`<div class="note r">最近一次錯誤：${esc(r.lastErr)}（已試 ${r.tries||0} 次，會自動重試）</div>`:''}
     ${r.missing?.length?`<div class="note y">待補：${r.missing.join('、')}</div>`:''}
-    ${files.length?`<div class="sec-t">PDF（點開檢視）</div><div class="pdfs">${files.map(f=>`<button onclick="openPdf('${r.id}','${esc(f.name)}')">📄 ${esc(f.name)}<span>${f.pages} 頁・${kb(f.size)}${r.uploaded?.includes(f.name)?'・✓已傳':''}</span></button>`).join('')}</div>`:''}
+    ${files.length?`<div class="sec-t">檔案（點開檢視）</div><div class="pdfs">${files.map(f=>`<button onclick="openPdf('${r.id}','${esc(f.name)}')">${/\.png$/.test(f.name)?'✍️':'📄'} ${esc(f.name)}<span>${f.pages} 頁・${kb(f.size)}${r.uploaded?.includes(f.name)?'・✓已傳':''}</span></button>`).join('')}</div>`:''}
     ${r.status==='nas'?`<div class="note g">已入 NAS，手機上的照片與 PDF 已刪除。</div>`:''}
     ${r.status==='exp'?`<div class="note y">已匯出到手機「下載」資料夾。轉入電腦後，請手動刪除手機上的檔案。</div>`:''}
     ${r.status==='draft'?`<div class="note b">這一戶還沒按「完成本戶」。</div>`:''}`;
@@ -467,7 +469,7 @@ function openConsent(){
     <div style="font-size:13px;color:var(--ink2);margin:0 12px 4px">請客戶在下方框內簽名（選填）</div>
     <canvas id="gC"></canvas>
     <div class="bt"><button class="btn warn" id="gClr">清除簽名</button><button class="btn sec" id="gX">取消</button><button class="btn" id="gSave">確定</button></div>`;
-  openOverlay(el);
+  openOverlay(el,render);
   const cv=$('gC'),r=cv.getBoundingClientRect(),dpr=Math.min(2,devicePixelRatio||1);cv.width=r.width*dpr;cv.height=r.height*dpr;
   const x=cv.getContext('2d');x.scale(dpr,dpr);x.lineWidth=3;x.lineCap=x.lineJoin='round';x.strokeStyle='#111';
   let drawing=false,drawn=false;
@@ -529,7 +531,9 @@ async function buildPdfs(c){
     out.push({name:d.file,blob:makePdf(pages),pages:pages.length});
   }
   if(c.kind!=='sup'){const cv=await consentPage(c);const blob=await new Promise(r=>cv.toBlob(r,'image/jpeg',.85));
-    out.push({name:'同意書.pdf',blob:makePdf([[Object.assign({bytes:new Uint8Array(await blob.arrayBuffer()),w:cv.width,h:cv.height},fit(cv.width,cv.height,0,0,595,842))]]),pages:1});}
+    out.push({name:'同意書.pdf',blob:makePdf([[Object.assign({bytes:new Uint8Array(await blob.arrayBuffer()),w:cv.width,h:cv.height},fit(cv.width,cv.height,0,0,595,842))]]),pages:1});
+    const sig=c.consent.sigId&&await dbGet('photos',c.consent.sigId);   // 簽名另存透明底 PNG，日後可再利用
+    if(sig)out.push({name:'簽名.png',blob:sig.blob,pages:1});}
   return out;
 }
 async function sha256(b){const h=await crypto.subtle.digest('SHA-256',await b.arrayBuffer());return [...new Uint8Array(h)].map(x=>x.toString(16).padStart(2,'0')).join('');}
@@ -603,7 +607,18 @@ setInterval(()=>pump(false),30000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)pump(false)});
 
 /* ============ 檢視／匯出 ============ */
-async function openPdf(id,name){const p=await dbGet('pdfs',id+'/'+name);if(!p)return toast('這個檔案已從手機刪除（已入 NAS）');const u=URL.createObjectURL(p.blob);window.open(u,'_blank')||(location.href=u);setTimeout(()=>URL.revokeObjectURL(u),60000);}
+/** 在 App 內檢視：PDF 取出裡面的 JPEG 頁面（手機瀏覽器多半不能直接開 blob PDF），PNG 直接顯示 */
+async function openPdf(id,name){
+  const p=await dbGet('pdfs',id+'/'+name);if(!p)return toast('這個檔案已從手機刪除（已入 NAS）');
+  const urls=[];
+  if(/\.png$/.test(name))urls.push(URL.createObjectURL(p.blob));
+  else{const b=new Uint8Array(await p.blob.arrayBuffer()),t=new TextDecoder('latin1').decode(b),re=/\/DCTDecode \/Length (\d+) >>\nstream\n/g;let m;
+    while((m=re.exec(t))){const s=m.index+m[0].length;urls.push(URL.createObjectURL(new Blob([b.subarray(s,s+ +m[1])],{type:'image/jpeg'})));}}
+  const v=document.createElement('div');v.className='ov viewer';
+  v.innerHTML=`<div class="pages">${urls.map(u=>`<img src="${u}">`).join('')}</div><div class="info">${esc(name)}・${urls.length} 張影像</div>
+    <div class="bt"><button class="btn sec" id="vx">關閉</button></div>`;
+  openOverlay(v,()=>urls.forEach(u=>URL.revokeObjectURL(u)));v.querySelector('#vx').onclick=closeOverlay;
+}
 async function exportRec(id){
   const r=S.recs.find(x=>x.id===id);
   for(const f of r.files){const p=await dbGet('pdfs',r.id+'/'+f.name);if(!p)continue;const a=document.createElement('a');a.href=URL.createObjectURL(p.blob);a.download=`${r.no}-${r.name}_${f.name}`;document.body.appendChild(a);a.click();a.remove();await sleep(600);}

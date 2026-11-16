@@ -1,5 +1,5 @@
 // 收件小幫手：離線快取（只快取網站本身，不快取任何上傳或客戶資料）
-const APP = 'intake-app-v1';
+const APP = 'intake-app-v2';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(APP).then(c => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
